@@ -4,84 +4,122 @@
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <linux/uaccess.h>
-#include <linux/pid.h>
 #include <linux/sched/signal.h>
 #include <linux/version.h>
 
 #define MAX_PIDS 128
 #define PROC_NAME "pidinfo"
 
-int stored_pids[MAX_PIDS];
-int num_pids;
+/* ---- Global Variables ---- */
+static int stored_pids[MAX_PIDS];
+static int num_pids;
+static struct proc_dir_entry *proc_entry;
 
+/***************** Function Prototypes *****************/
+static int pidinfo_show(struct seq_file *m, void *v);
+static int proc_open(struct inode *inode, struct file *file);
+static ssize_t proc_write(struct file *file, const char __user *usr_buf, size_t count, loff_t *pos);
+static int __init pidinfo_init(void);
+static void __exit pidinfo_exit(void);
 
+/***************** seq_file Show *****************/
+/* Called when user runs "cat /proc/pidinfo" */
+static int pidinfo_show(struct seq_file *m, void *v)
+{
+    int i;
 
-/***************** Prototypes *****************/
-ssize_t proc_read(struct file *file, char __user *usr_buf, size_t count, loff_t *pos);
-
-static struct file_operations proc_ops = {
-	.owner = THIS_MODULE,
-	.open = proc_open,
-	.read = seq_read,
-	.write = proc_write,
-	.llseek = seq_lseek,
-	.release = single_release,
-};
-
-// Initialization: create /proc/seconds and record start time
-static int __init proc_init(void) {
-    proc_create(PROC_NAME, 0666, NULL, &proc_ops);
-    return 0;
-}
-
-// Cleanup: remove /proc/seconds
-static void __exit proc_exit(void) {
-    remove_proc_entry(PROC_NAME, NULL);
-}
-
-/***************** Write *****************/
-ssize_t proc_write(struct file *file, const char __user *usr_buf, size_t count, loff_t *pos){
-	char k_mem[32];
-
-	k_mem = kmalloc(count, GFP_KERNEL);
-
-	copy_from_user(k_mem, usr_buf, count);
-
-	printfk(KERN_INFO "%s\n", k_mem);
-
-	kfree(k_mem);
-
-	return count;
-}
-
-
-// Read function for /proc/seconds
-ssize_t proc_read(struct file *file, char __user *usr_buf, size_t count, loff_t *pos) {
-    int rv = 0;
-    char buffer[BUFFER_SIZE];
-    static int completed = 0;
-
-    if (completed) {
-        completed = 0;
+    if (num_pids == 0) {
+        seq_puts(m, "No PIDs stored. echo a PID to /proc/" PROC_NAME " first.\n");
         return 0;
     }
 
-    completed = 1;
+    for (i = 0; i < num_pids; i++) {
+        int pid = stored_pids[i];
+        struct task_struct *task = pid_task(find_vpid(pid), PIDTYPE_PID);
 
-    rv = sprintf(buffer, "Elapsed seconds: %ld\n", elapsed_seconds);
+        if (!task) {
+            seq_printf(m, "PID %d: <not found>\n", pid);
+            continue;
+        }
 
-    if (copy_to_user(usr_buf, buffer, rv)) {
-        return -1;
+        /* Print a few useful fields */
+        seq_printf(m,
+                   "command = [%s]\tpid = [%d]\tstate = [%u]\n",
+                   task->comm,
+                   task->pid,
+                   READ_ONCE(task->__state));
     }
 
-    return rv;
+    return 0;
 }
 
-/***************** Module declarations *****************/
+/***************** /proc Open *****************/
+/* Called when /proc file is opened */
+static int proc_open(struct inode *inode, struct file *file)
+{
+    return single_open(file, pidinfo_show, NULL);
+}
 
-// Register init and exit
-module_init(proc_init);
-module_exit(proc_exit);
+/***************** /proc Write *****************/
+/* Called when user runs "echo PID > /proc/pidinfo" */
+static ssize_t proc_write(struct file *file, const char __user *usr_buf,
+                          size_t count, loff_t *pos)
+{
+    char k_mem[32];
+    size_t n = min(count, sizeof(k_mem) - 1);
+    int ret, pid;
+
+    /* copy and NUL-terminate */
+    if (copy_from_user(k_mem, usr_buf, n))
+        return -EFAULT;
+    k_mem[n] = '\0';
+
+    /* optional: trim trailing newline */
+    if (n > 0 && k_mem[n - 1] == '\n')
+        k_mem[n - 1] = '\0';
+
+    ret = kstrtoint(k_mem, 10, &pid);
+    if (ret)
+        return ret;
+
+    if (num_pids >= MAX_PIDS)
+        return -ENOSPC;
+
+    stored_pids[num_pids++] = pid;
+    return count;
+}
+
+/***************** File Operations *****************/
+static const struct proc_ops proc_ops = {
+    .proc_open    = proc_open,
+    .proc_read    = seq_read,
+    .proc_write   = proc_write,
+    .proc_lseek   = seq_lseek,
+    .proc_release = single_release,
+};
+
+/***************** Module Initialization *****************/
+static int __init pidinfo_init(void)
+{
+    num_pids = 0;
+    proc_entry = proc_create(PROC_NAME, 0666, NULL, &proc_ops);
+    if (!proc_entry)
+        return -ENOMEM;
+    pr_info("/proc/%s created\n", PROC_NAME);
+    return 0;
+}
+
+/***************** Module Cleanup *****************/
+static void __exit pidinfo_exit(void)
+{
+    if (proc_entry)
+        proc_remove(proc_entry);
+    pr_info("/proc/%s removed\n", PROC_NAME);
+}
+
+/***************** Module Declarations *****************/
+module_init(pidinfo_init);
+module_exit(pidinfo_exit);
 
 // Module metadata
 MODULE_LICENSE("GPL");
