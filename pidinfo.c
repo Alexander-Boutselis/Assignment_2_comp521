@@ -62,30 +62,47 @@ static int proc_open(struct inode *inode, struct file *file)
 
 /***************** /proc Write *****************/
 /* Called when user runs "echo PID > /proc/pidinfo" */
-static ssize_t proc_write(struct file *file, const char __user *usr_buf,
-                          size_t count, loff_t *pos)
-{
+static ssize_t proc_write(struct file *file, const char __user *usr_buf, size_t count, loff_t *pos){
+    // Debug log to confirm the function runs
+    pr_info("proc_write called, count=%zu\n", count);
+
+
     char k_mem[32];
     size_t n = min(count, sizeof(k_mem) - 1);
     int ret, pid;
 
-    /* copy and NUL-terminate */
+
+    // Copy user data into kernel buffer
     if (copy_from_user(k_mem, usr_buf, n))
         return -EFAULT;
     k_mem[n] = '\0';
 
-    /* optional: trim trailing newline */
+
+    // Trim trailing newline if present
     if (n > 0 && k_mem[n - 1] == '\n')
         k_mem[n - 1] = '\0';
 
+
+    // Log what was written
+    pr_info("user wrote: %s\n", k_mem);
+
+
+    // Convert string to integer PID
     ret = kstrtoint(k_mem, 10, &pid);
     if (ret)
         return ret;
 
+
+    // Store PID if array not full
     if (num_pids >= MAX_PIDS)
         return -ENOSPC;
 
+
     stored_pids[num_pids++] = pid;
+    pr_info("storing PID %d at index %d\n", pid, num_pids - 1);
+    pr_info("pidinfo: stored PID %d\n", pid);
+
+
     return count;
 }
 
@@ -122,6 +139,6 @@ module_init(pidinfo_init);
 module_exit(pidinfo_exit);
 
 // Module metadata
-MODULE_LICENSE("GPL");
+MODULE_LICENSE("pidinfo");
 MODULE_DESCRIPTION("Assignment 2");
 MODULE_AUTHOR("Alexander Boutselis");
